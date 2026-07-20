@@ -46,8 +46,14 @@ def reset_chat():
     st.session_state["pending_hitl"] = None
     # =============================================================
 
-    # Add the new thread to the conversation list
-    add_thread(st.session_state["thread_id"])
+    # ========================= TITLE FEATURE ADDED =========================
+    # NOTE: We do NOT add this new thread to the sidebar list here.
+    # A brand-new empty chat has no messages yet, so there is nothing
+    # meaningful to title it with. Like ChatGPT, it will only appear
+    # in the sidebar once the user sends its first message
+    # (see the add_thread() call further down, in the "if user_input:" block).
+    # =========================================================================
+
 
 
 # Load a previous conversation from the LangGraph checkpointer
@@ -65,6 +71,40 @@ def load_conversation(thread_id):
     # Return saved messages
     # Return an empty list if no messages are available
     return state.values.get("messages", [])
+
+
+# ========================= TITLE FEATURE ADDED =========================
+
+# Return a short, readable title for a thread instead of showing its raw UUID.
+# The title is the thread's MOST RECENT user message (not the first one),
+# shortened if it's long, so the sidebar reflects what the conversation is
+# currently about. If the thread has no messages yet, a placeholder is used.
+def get_thread_title(thread_id):
+
+    # Reuse the existing function to load this thread's saved messages
+    messages = load_conversation(thread_id)
+
+    # Maximum characters to show before shortening with "…"
+    MAX_TITLE_LENGTH = 24
+
+    # Walk the messages in REVERSE order, so we find the most recent
+    # user message first instead of the very first one
+    for message in reversed(messages):
+
+        if isinstance(message, HumanMessage) and message.content:
+
+            title = message.content.strip()
+
+            # Keep the sidebar tidy by shortening long messages
+            if len(title) > MAX_TITLE_LENGTH:
+                title = title[:MAX_TITLE_LENGTH].rstrip() + "…"
+
+            return title
+
+    # No messages yet in this thread (e.g. it was just created)
+    return f"New conversation ({str(thread_id)[:8]}…)"
+
+# =========================================================================
 
 
 # ========================= HITL helper functions =========================
@@ -310,8 +350,86 @@ st.set_page_config(
     page_icon="🤖"
 )
 
+# ========================= TITLE POSITION ADDED =========================
+# Streamlit adds empty space above the page content by default.
+# This trims that gap so the title sits higher on the page.
+st.markdown(
+    "<style>.block-container { padding-top: 1.5rem; }</style>",
+    unsafe_allow_html=True
+)
+# =========================================================================
+
 # Display the main application title
 st.title("Agentic Chatbot with LangGraph")
+
+# ========================= CAPABILITIES BADGES ADDED =========================
+# Show what this agent can actually do, as styled pill badges that are
+# ALSO clickable — clicking one sends a real example message for that
+# capability, using the exact same message flow as typing in the chat box.
+
+CAPABILITY_BADGES = [
+    ("📄", "Documents", "How do I upload a PDF, and what can you tell me about it once it's uploaded?"),
+    ("🌐", "Web Search", "Search the web for the latest AI news today."),
+    ("🧮", "Calculations", "Calculate 245 * 12 + sqrt(144) for me."),
+    ("📈", "Stock Prices", "What is the current stock price of AAPL?"),
+    ("💰", "Purchases", "Buy 5 shares of AAPL."),
+    ("🌦️", "Weather", "What is the current weather in Nagpur, India?"),
+]
+
+# Holds a prompt queued by clicking a badge, so it can be picked up
+# by the normal message-handling code further down the script
+if "queued_prompt" not in st.session_state:
+    st.session_state["queued_prompt"] = None
+
+# CSS that restyles each badge's underlying st.button to look like a
+# small rounded pill instead of a default rectangular Streamlit button.
+# Each badge button sits inside st.container(key="cap_badge_N"), which
+# Streamlit renders as a div with class "st-key-cap_badge_N" — that
+# class is what lets this CSS target only these specific buttons.
+st.markdown(
+    """
+    <style>
+    div[data-testid="column"]:has([class*="st-key-cap_badge"]) {
+        width: fit-content !important;
+        flex: 0 0 auto !important;
+        min-width: 0 !important;
+    }
+
+    [class*="st-key-cap_badge"] button {
+        background-color: #1c2129 !important;
+        border: 1px solid #2e3542 !important;
+        border-radius: 999px !important;
+        padding: 6px 14px !important;
+        font-size: 0.78rem !important;
+        color: #c9d1d9 !important;
+        white-space: nowrap !important;
+        width: max-content !important;
+    }
+    [class*="st-key-cap_badge"] button:hover {
+        border-color: #58a6ff !important;
+        color: #ffffff !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# Lay the badges out in one row, left-aligned, each as its own
+# clickable button that queues its prompt when clicked.
+badge_column_widths = [len(label) + 6 for _, label, _ in CAPABILITY_BADGES]
+badge_columns = st.columns(badge_column_widths, gap="medium")
+
+for index, (col, (icon, label, prompt)) in enumerate(zip(badge_columns, CAPABILITY_BADGES)):
+
+    with col:
+        with st.container(key=f"cap_badge_{index}"):
+
+            if st.button(f"{icon} {label}", key=f"cap_badge_btn_{index}"):
+                st.session_state["queued_prompt"] = prompt
+                st.rerun()
+
+st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
+# ===============================================================================
 
 
 # Create message_history when the app runs for the first time
@@ -329,6 +447,16 @@ if "chat_threads" not in st.session_state:
     st.session_state["chat_threads"] = get_all_threads()
 
 
+# ========================= TITLE FEATURE ADDED =========================
+
+# Cache of thread_id -> title, so we don't have to re-read the
+# checkpoint database for every thread on every single rerun
+if "thread_titles" not in st.session_state:
+    st.session_state["thread_titles"] = {}
+
+# =========================================================================
+
+
 # ========================= HITL ADDED =========================
 
 # Store the currently pending human approval request
@@ -336,10 +464,6 @@ if "pending_hitl" not in st.session_state:
     st.session_state["pending_hitl"] = None
 
 # =============================================================
-
-
-# Add the current thread to the conversation list
-add_thread(st.session_state["thread_id"])
 
 
 # ========================= HITL ADDED =========================
@@ -359,7 +483,7 @@ st.sidebar.title("My Conversations")
 
 
 # Create a button for starting a new conversation
-if st.sidebar.button("New Chat"):
+if st.sidebar.button("New Chat", use_container_width=True):
 
     # Reset the current chat and create a new thread
     reset_chat()
@@ -369,13 +493,21 @@ if st.sidebar.button("New Chat"):
 
 
 # Display all conversation threads in reverse order
-# This shows the newest conversation first
 for thread_id in st.session_state["chat_threads"][::-1]:
 
-    # Create one sidebar button for every conversation
+    # ========================= TITLE FEATURE ADDED =========================
+
+    if thread_id not in st.session_state["thread_titles"]:
+        st.session_state["thread_titles"][thread_id] = get_thread_title(thread_id)
+
+    thread_title = st.session_state["thread_titles"][thread_id]
+
+    # =========================================================================
+
     if st.sidebar.button(
-        str(thread_id),
-        key=thread_id
+        thread_title,
+        key=thread_id,
+        use_container_width=True
     ):
 
         # Set the selected thread as the current thread
@@ -384,66 +516,76 @@ for thread_id in st.session_state["chat_threads"][::-1]:
         # Load the messages saved under the selected thread
         messages = load_conversation(thread_id)
 
-        # Temporary list for converting LangChain messages
-        # into Streamlit's required message format
         temp_messages = []
 
-        # Loop through all saved messages
         for message in messages:
 
-            # Check whether the message was sent by the user
             if isinstance(message, HumanMessage):
                 role = "user"
 
-            # Check whether the message was sent by the AI
             elif isinstance(message, AIMessage):
                 role = "assistant"
 
-            # Ignore other message types, such as ToolMessage
             else:
                 continue
 
-            # Convert the LangChain message into a dictionary
             temp_messages.append({
                 "role": role,
                 "content": message.content
             })
 
-        # Replace the current UI history with the selected conversation
         st.session_state["message_history"] = temp_messages
 
         # ========================= HITL ADDED =========================
 
-        # Restore any pending approval for this conversation
         sync_pending_interrupt(thread_id)
 
         # =============================================================
 
-        # Rerun the application to display the loaded messages
         st.rerun()
 
 
 # ========================= Main chat interface =========================
 
+# ========================= AUTO CAPABILITY INTRO ADDED =========================
+# If this is a brand-new conversation with no messages yet, automatically
+# show an assistant welcome bubble that explains what the agent can do —
+# so the user understands its capabilities WITHOUT having to send a
+# message first.
+#
+# IMPORTANT: this bubble is UI-only. It is never appended to
+# message_history and never sent to the LangGraph backend, so it does
+# not get saved as part of the thread, does not affect the sidebar
+# title, and disappears on its own the moment a real message exists.
+if not st.session_state["message_history"]:
+
+    with st.chat_message("assistant"):
+        st.markdown(
+            "👋 Hi! I'm an agentic chatbot. Here's what I can help you with:\n\n"
+            "- 📄 **Documents** — upload a PDF and ask me questions about it\n"
+            "- 🌐 **Web Search** — I can search the web for the latest information\n"
+            "- 🧮 **Calculations** — I can work out math problems for you\n"
+            "- 📈 **Stock Prices** — ask me for the current price of any stock\n"
+            "- 💰 **Purchases** — I can buy stocks for you, with your approval\n"
+            "- 🌦️ **Weather** — ask me for the current weather in any city\n\n"
+            "Tap one of the badges above, or just type a message below to get started."
+        )
+# ===============================================================================
+
 # Display all messages from the currently selected conversation
 for message in st.session_state["message_history"]:
 
-    # Create either a user chat bubble or assistant chat bubble
     with st.chat_message(message["role"]):
 
-        # Display the message content
         st.text(message["content"])
 
 
 # ========================= HITL approval interface =========================
 
-# Get the currently pending approval request
 pending_hitl = st.session_state.get(
     "pending_hitl"
 )
 
-# Check whether the pending approval belongs to
-# the currently selected conversation
 current_thread_has_pending_hitl = (
     pending_hitl is not None
     and pending_hitl.get("thread_id")
@@ -451,7 +593,6 @@ current_thread_has_pending_hitl = (
 )
 
 
-# Display approval controls
 if current_thread_has_pending_hitl:
 
     st.warning(
@@ -461,7 +602,6 @@ if current_thread_has_pending_hitl:
 
     approve_column, reject_column = st.columns(2)
 
-    # Approve button
     with approve_column:
 
         if st.button(
@@ -471,10 +611,8 @@ if current_thread_has_pending_hitl:
             use_container_width=True
         ):
 
-            # Send "yes" back to interrupt()
             resume_hitl_execution("yes")
 
-    # Reject button
     with reject_column:
 
         if st.button(
@@ -483,52 +621,42 @@ if current_thread_has_pending_hitl:
             use_container_width=True
         ):
 
-            # Send "no" back to interrupt()
             resume_hitl_execution("no")
 
 
 # ========================= Fixed chat input with PDF upload =========================
 
-# Keep st.chat_input directly in the main body.
-# This keeps it fixed at the bottom of the screen.
-#
-# accept_file=True adds the attachment button inside the chat input.
-# file_type=["pdf"] allows PDF files only.
 submission = st.chat_input(
     "Type here",
     accept_file=True,
     file_type=["pdf"],
-
-    # Disable input while waiting for human approval
     disabled=current_thread_has_pending_hitl
 )
 
 
-# Default user input value
 user_input = None
 
+# ========================= CAPABILITIES BADGES ADDED =========================
+if st.session_state.get("queued_prompt"):
+    user_input = st.session_state["queued_prompt"]
+    st.session_state["queued_prompt"] = None
+# ===============================================================================
 
-# Process the submitted text and PDF
+
 if submission:
 
-    # Get the text entered by the user
     user_input = submission.text
 
-    # Get the uploaded files
-    # This is always a list when accept_file is enabled
     uploaded_files = submission.files
 
-    # Process the uploaded PDF if one was attached
     if uploaded_files:
 
         uploaded_pdf = uploaded_files[0]
 
-        # Store the temporary file path
         temporary_file_path = None
 
         try:
 
-            # Save the uploaded PDF as a temporary local file
             with tempfile.NamedTemporaryFile(
                 delete=False,
                 suffix=".pdf"
@@ -540,7 +668,6 @@ if submission:
 
                 temporary_file_path = temporary_file.name
 
-            # Call the existing backend RAG ingestion function
             with st.spinner(
                 f"Processing {uploaded_pdf.name}..."
             ):
@@ -549,7 +676,6 @@ if submission:
                     temporary_file_path
                 )
 
-            # Display PDF processing confirmation
             st.toast(
                 f"{uploaded_pdf.name} processed successfully.",
                 icon="✅"
@@ -557,14 +683,12 @@ if submission:
 
         except Exception as error:
 
-            # Display PDF processing error
             st.error(
                 f"PDF processing failed: {error}"
             )
 
         finally:
 
-            # Delete the temporary PDF after indexing
             if (
                 temporary_file_path
                 and os.path.exists(temporary_file_path)
@@ -572,21 +696,24 @@ if submission:
                 os.remove(temporary_file_path)
 
 
-# Run this block after the user submits a text message
 if user_input:
 
-    # Save the user's message in Streamlit session state
     st.session_state["message_history"].append({
         "role": "user",
         "content": user_input
     })
 
-    # Display the user's message in the chat interface
+    # ========================= TITLE FEATURE ADDED =========================
+
+    add_thread(st.session_state["thread_id"])
+
+    st.session_state["thread_titles"].pop(st.session_state["thread_id"], None)
+
+    # =========================================================================
+
     with st.chat_message("user"):
         st.text(user_input)
 
-    # Pass the current thread ID to LangGraph
-    # LangGraph uses this ID to save and retrieve conversation memory
     CONFIG = {
         "configurable": {
             "thread_id": st.session_state["thread_id"]
@@ -597,10 +724,8 @@ if user_input:
         "run_name": "chat_trace",
     }
 
-    # Assistant streaming block
     with st.chat_message("assistant"):
 
-        # Use a mutable holder so the generator can set/modify it
         status_holder = {
             "box": None
         }
@@ -617,8 +742,6 @@ if user_input:
                 stream_mode="messages",
             ):
 
-                # Lazily create & update the SAME status container
-                # when any tool runs
                 if isinstance(
                     message_chunk,
                     ToolMessage
@@ -645,7 +768,6 @@ if user_input:
                             expanded=True,
                         )
 
-                # Stream ONLY assistant tokens
                 if isinstance(
                     message_chunk,
                     AIMessage
@@ -654,17 +776,12 @@ if user_input:
 
             # ========================= HITL ADDED =========================
 
-            # interrupt() pauses the graph without returning
-            # a completed ToolMessage.
-            #
-            # Inspect the saved checkpoint after streaming ends.
             pending_interrupt = get_pending_interrupt(
                 st.session_state["thread_id"]
             )
 
             if pending_interrupt is not None:
 
-                # Save the interrupt for displaying approval buttons
                 save_pending_interrupt(
                     st.session_state["thread_id"],
                     pending_interrupt
@@ -682,10 +799,8 @@ if user_input:
             ai_only_stream()
         )
 
-        # Finalize only if a tool was actually used
         if status_holder["box"] is not None:
 
-            # Check whether execution is waiting for approval
             if get_pending_interrupt(
                 st.session_state["thread_id"]
             ) is not None:
@@ -704,7 +819,6 @@ if user_input:
                     expanded=False
                 )
 
-    # Save the complete assistant response in Streamlit session state
     st.session_state["message_history"].append({
         "role": "assistant",
         "content": ai_message
@@ -712,8 +826,6 @@ if user_input:
 
     # ========================= HITL ADDED =========================
 
-    # Approval controls are rendered earlier in the script.
-    # Rerun so they appear immediately after interrupt().
     if (
         st.session_state.get("pending_hitl") is not None
         and st.session_state["pending_hitl"].get("thread_id")
